@@ -14,16 +14,12 @@ from typing import Any, TypeVar
 
 import torch.distributed as dist
 
-PLACEMENT_SNAPSHOT_VERSION = 1
-_REQUIRED_KEYS = frozenset({"version", "ep_size", "target"})
-_MODEL_KEYS = frozenset({"num_logical_experts", "num_redundant_experts", "physical_to_logical_map"})
+from vllm_ascend.distributed.eplb.placement import (
+    PLACEMENT_SNAPSHOT_VERSION,
+    validate_placement_snapshot,
+)
+
 _T = TypeVar("_T")
-
-
-def _require_int(value: Any, name: str, minimum: int) -> int:
-    if type(value) is not int or value < minimum:
-        raise ValueError(f"{name} must be an integer >= {minimum}")
-    return value
 
 
 @dataclass(frozen=True)
@@ -93,52 +89,23 @@ def build_model_role_spec(moe_model: Any | None) -> RuntimeRoleSpec | None:
     )
 
 
-def _parse_role_entry(entry: Any, role: str, ep_size: int) -> RolePlacement:
-    if not isinstance(entry, dict) or set(entry) != _MODEL_KEYS:
-        raise ValueError(f"EPLB {role} placement must contain exactly {sorted(_MODEL_KEYS)}")
-    num_logical = _require_int(entry["num_logical_experts"], f"{role}.num_logical_experts", 1)
-    num_redundant = _require_int(entry["num_redundant_experts"], f"{role}.num_redundant_experts", 0)
-    num_physical = num_logical + num_redundant
-    if num_physical % ep_size != 0:
-        raise ValueError(f"EPLB {role} physical expert count ({num_physical}) must be divisible by ep_size")
-    mapping = entry["physical_to_logical_map"]
-    if not isinstance(mapping, list) or not mapping or any(not isinstance(row, list) for row in mapping):
-        raise ValueError(f"EPLB {role}.physical_to_logical_map must be a non-empty list of layer lists")
-
-    slots_per_rank = num_physical // ep_size
-    expected = set(range(num_logical))
-    rows: list[tuple[int, ...]] = []
-    for layer_idx, row in enumerate(mapping):
-        if len(row) != num_physical:
-            raise ValueError(f"EPLB {role} layer {layer_idx} has an invalid physical slot count")
-        if any(type(e) is not int or not 0 <= e < num_logical for e in row):
-            raise ValueError(f"EPLB {role} layer {layer_idx} contains an invalid logical expert ID")
-        if set(row) != expected:
-            raise ValueError(f"EPLB {role} layer {layer_idx} does not cover every logical expert")
-        for rank in range(ep_size):
-            slot_slice = row[rank * slots_per_rank : (rank + 1) * slots_per_rank]
-            if len(set(slot_slice)) != slots_per_rank:
-                raise ValueError(f"EPLB {role} layer {layer_idx} contains duplicate logical experts on rank {rank}")
-        rows.append(tuple(row))
+def _to_role_placement(entry: dict[str, Any]) -> RolePlacement:
     return RolePlacement(
-        num_logical_experts=num_logical,
-        num_redundant_experts=num_redundant,
-        physical_to_logical_map=tuple(rows),
+        num_logical_experts=entry["num_logical_experts"],
+        num_redundant_experts=entry["num_redundant_experts"],
+        physical_to_logical_map=tuple(tuple(row) for row in entry["physical_to_logical_map"]),
     )
 
 
 def parse_placement_snapshot(snapshot: Any) -> PlacementSnapshot:
-    if not isinstance(snapshot, dict):
-        raise ValueError("EPLB placement snapshot must be a JSON object")
-    if type(snapshot.get("version")) is not int or snapshot["version"] != PLACEMENT_SNAPSHOT_VERSION:
-        raise ValueError(f"Unsupported EPLB placement version: {snapshot.get('version')!r}")
-    keys = set(snapshot)
-    if _REQUIRED_KEYS - keys or keys - _REQUIRED_KEYS - {"draft"}:
-        raise ValueError(f"EPLB placement snapshot must contain {sorted(_REQUIRED_KEYS)} and optional 'draft'")
-    ep_size = _require_int(snapshot["ep_size"], "ep_size", 1)
-    target = _parse_role_entry(snapshot["target"], "target", ep_size)
-    draft = _parse_role_entry(snapshot["draft"], "draft", ep_size) if "draft" in snapshot else None
-    return PlacementSnapshot(version=PLACEMENT_SNAPSHOT_VERSION, ep_size=ep_size, target=target, draft=draft)
+    validate_placement_snapshot(snapshot)
+    draft = _to_role_placement(snapshot["draft"]) if "draft" in snapshot else None
+    return PlacementSnapshot(
+        version=PLACEMENT_SNAPSHOT_VERSION,
+        ep_size=snapshot["ep_size"],
+        target=_to_role_placement(snapshot["target"]),
+        draft=draft,
+    )
 
 
 def load_placement_snapshot(path: str | os.PathLike[str]) -> PlacementSnapshot:

@@ -222,6 +222,18 @@ vllm serve Qwen/Qwen3-30B-A3B \
   --additional-config '{"eplb_config":{"load_collection_phase":"prefill"}}'
 ```
 
+#### Placement Export
+
+Set `eplb_config.expert_placement_path` (for example,
+`--additional-config '{"eplb_config":{"expert_placement_path":"/tmp/expert_placement.json"}}'`)
+to atomically export the best committed expert placement on global rank 0's
+host. Before the first rearrangement, EPLB records the initial placement's
+observed per-step peak-to-mean rank-load ratio without writing to disk; before
+each subsequent rearrangement, global rank 0 updates the file only when the
+active committed placement achieves a strictly lower observed peak-to-mean
+ratio (requiring at least two rearrangement intervals in calibration runs).
+Pipeline parallelism and speculative MoE drafts with EPLB enabled are supported.
+
 #### MRv2 Constraints
 
 MRv2 supports asynchronous EPLB only and normalizes `use_async=false` to
