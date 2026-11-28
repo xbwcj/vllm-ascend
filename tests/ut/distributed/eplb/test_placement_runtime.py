@@ -156,7 +156,7 @@ class TestPlacementRuntime(unittest.TestCase):
                 runtime.dist,
                 "all_gather_object",
                 side_effect=lambda out, val, *, group: out.__setitem__(
-                    slice(None), [None, None] if val is None else [val, "other"]
+                    slice(None), [val, "other"] if val is not None else [None, None]
                 ),
             ),
             self.assertRaisesRegex(ValueError, "differs across"),
