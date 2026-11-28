@@ -291,15 +291,15 @@ class AscendEplbState(_eplb_state.EplbState):
         self._suspended = False
         self._close_error: Exception | None = None
         self._hixl_session: _HixlSession | None = None
-        self.static_mode = False
-        self._static_observation_step = 0
-        self._static_observation_due = False
-        self._static_recording_enabled = True
         # vLLM main renamed ``EplbState.cuda_device_index`` to ``device_index``
         # (and passes it to EplbModelState on add_model), so keep both lanes
         # pointing at the attribute upstream actually reads.
         if self.device_index is None:
             self.device_index = torch.accelerator.current_device_index()
+        self.static_mode = False
+        self._static_observation_step = 0
+        self._static_observation_due = False
+        self._static_recording_enabled = True
 
     @property
     def uses_custom_load_stats(self) -> bool:
@@ -787,7 +787,6 @@ class AscendEplbState(_eplb_state.EplbState):
         if should_gate and not self._has_global_fresh_recorded_load():
             return None
 
-        global_load_stats = None
         if use_custom_async_stats:
             global_load_stats = self.collect_global_load_stats()
             if global_load_stats is not None:

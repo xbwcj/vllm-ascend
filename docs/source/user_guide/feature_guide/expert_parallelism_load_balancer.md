@@ -123,10 +123,9 @@ above deviate from them, and when to do the same:
   increase rearrangement frequency and trade stability for faster response.
 
 These fields may also be passed together as JSON through `--eplb-config`.
-They must not be placed in `--additional-config` for MRv2: the only MRv2 EPLB
-fields under `additional_config.eplb_config` are `load_collection_phase`,
-`stair_config`, `mode`, and `expert_placement_path`; any other field is
-rejected at startup.
+Keep upstream fields in `--eplb-config`; Ascend EPLB fields under
+`additional_config.eplb_config` are `load_collection_phase`, `mode`,
+`expert_placement_path`, and `stair_config`.
 
 Ascend extends the upstream `policy` field without adding a second selector.
 For example, use `--eplb-config.policy default` to run the upstream policy;
@@ -134,8 +133,8 @@ omit it or set it to `stair` to run STAIR.
 
 ### Static Deployment Import
 
-`eplb_config.mode=static` installs a pre-generated deployment document once,
-before memory profiling and graph capture, and then keeps the fixed
+`eplb_config.mode="static"` installs a `version: 1` placement snapshot JSON
+once, before memory profiling and graph capture, and then keeps the fixed
 expert-replica routing without runtime load collection, placement planning, or
 weight migration. `--enable-eplb` is still required because it controls the
 router and the expert allocation.
@@ -146,23 +145,23 @@ vllm serve Qwen/Qwen3-30B-A3B \
   --enable-expert-parallel \
   --enable-eplb \
   --eplb-config '{"num_redundant_experts":16}' \
-  --additional-config '{"eplb_config":{"mode":"static","expert_placement_path":"/data/eplb/deployment.json"}}'
+  --additional-config '{"eplb_config":{"mode":"static","expert_placement_path":"/data/eplb/placement.json"}}'
 ```
 
 Constraints:
 
-- The deployment document is an input. This change implements the consumer
-  side; the file must be produced by a compatible external calibration tool;
-  this change only consumes it.
-- `pipeline_parallel_size` must be `1`, `load_collection_phase` must stay
-  `all`, and `expert_placement_path` is required.
-- The document metadata must match the model, revision, architecture,
-  quantization, dtype, EP/TP/DP/PP sizes, expert counts, and layer order.
-- EP rank 0 reads the file; the document is broadcast to every rank and every
-  rank validates it against its own runtime metadata before weight movement.
-- A registered MoE draft that enables EPLB is installed from the same document.
-- `eplb_config.log_balancedness=true` enables a rank-local load sample. It is
-  for observation only and never triggers rearrangement.
+- `expert_placement_path` is required and must point to a `.json` placement
+  snapshot with `version: 1`, `ep_size`, `target` (`num_logical_experts`,
+  `num_redundant_experts`, `physical_to_logical_map`), and optional `draft`.
+- Global rank 0 reads the file, broadcasts it across PP and EP groups, and
+  every rank validates `ep_size`, logical/redundant expert counts, and whole-model
+  MoE layer counts (slicing layers per PP stage when `pipeline_parallel_size > 1`)
+  before any weight movement.
+- A registered MoE draft that enables EPLB is installed from the `draft` entry
+  of the same snapshot.
+- `load_collection_phase` may remain set (ignored during ordinary static
+  forwards, and applied when `eplb_config.log_balancedness=true` samples
+  rank-local load).
 
 #### MRv2 Communicator Selection
 

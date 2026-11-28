@@ -148,9 +148,8 @@ Both warmups run on a background thread during weight loading. The worker waits 
 
 **eplb_config**
 
-Accepts `load_collection_phase`, `stair_config`, and the static deployment
-fields `mode` and `expert_placement_path`. Configure upstream EPLB through
-`--enable-eplb` and `--eplb-config`. Ascend uses the STAIR policy by
+Accepts `load_collection_phase`, `mode`, `expert_placement_path`, and `stair_config`.
+Configure upstream EPLB through `--enable-eplb` and `--eplb-config`. Ascend uses the STAIR policy by
 default and moves expert weights asynchronously over HIXL when it is available
 on every EPLB rank, falling back to Gloo CPU staging otherwise. Select
 `default` or `stair` only through the upstream `--eplb-config.policy` option.
@@ -161,9 +160,9 @@ for the advanced STAIR fields and their defaults.
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `load_collection_phase` | str | `"all"` | Select `"all"`, `"prefill"`, or `"decode"` load submission. Only effective with the STAIR policy; a value other than `"all"` requires `--enable-eplb`. Any batch containing a prefill request is classified entirely as prefill. |
+| `mode` | str | `"dynamic"` | Select `"dynamic"` or `"static"`. `"dynamic"` runs runtime load collection and asynchronous expert rearrangement; `"static"` installs a `version: 1` placement snapshot from `expert_placement_path` once before profiling and graph capture without runtime collection or rearrangement (requires `--enable-eplb` and `expert_placement_path`). |
+| `expert_placement_path` | str | `None` | JSON file path (`.json`) on global rank 0's host for expert placement snapshots. Required input snapshot when `mode="static"`; optional output path when `mode="dynamic"`. Requires `--enable-eplb`. |
 | `stair_config` | dict | `{}` | Advanced STAIR policy tuning. See the [EPLB tuning suggestions table](../feature_guide/expert_parallelism_load_balancer.md#tuning-suggestions) for all fields, defaults, and ranges. |
-| `mode` | str | `"dynamic"` | `dynamic` runs runtime collection and rearrangement; `static` installs a deployment document once, before profiling, and then keeps routing without runtime rearrangement. Requires `expert_placement_path`. |
-| `expert_placement_path` | str | unset | Input deployment document for `static` mode. The file must come from a compatible external calibration tool. Rejected when `mode` is `dynamic`. |
 
 **scheduler_config**
 

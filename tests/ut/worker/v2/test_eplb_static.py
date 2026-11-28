@@ -5,19 +5,20 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from vllm_ascend.distributed.eplb.placement_runtime import RuntimeRoleSpec
 from vllm_ascend.worker.v2 import eplb as module
 from vllm_ascend.worker.v2.eplb import AscendEPLBController
 
 
 class TestStaticController(unittest.TestCase):
-    def make_controller(self, *, log_balancedness=False):
+    def make_controller(self, *, log_balancedness: bool = False):
         controller = AscendEPLBController.__new__(AscendEPLBController)
         controller.mode = "static"
         controller._static_observability_enabled = log_balancedness
         controller.expert_placement_path = "deployment.json"
-        controller.placement_scope = "mixed"
         controller.state = MagicMock()
-        controller.device = "npu:0"
+        controller.device = "npu:0"  # type: ignore[assignment]
+        controller.eplb_policy = MagicMock()
         controller.parallel_config = SimpleNamespace(
             enable_eplb=True,
             eplb_config=SimpleNamespace(log_balancedness=log_balancedness),
@@ -29,8 +30,15 @@ class TestStaticController(unittest.TestCase):
         controller.state._static_recording_enabled = False
         controller._placement_model_config = None
         controller._draft_placement_model_config = None
-        controller._draft_parallel_config = None
         return controller
+
+    def test_static_prepare_load_sets_static_mode_without_export(self):
+        controller = self.make_controller()
+        state = MagicMock()
+        with patch.object(module, "AscendEplbState", return_value=state):
+            controller.prepare_load()
+        self.assertTrue(state.static_mode)
+        state.enable_placement_export.assert_not_called()
 
     def test_static_controller_skips_runtime_hooks(self):
         controller = self.make_controller()
@@ -64,30 +72,35 @@ class TestStaticController(unittest.TestCase):
 
     def test_static_initialization_loads_before_install_without_worker(self):
         controller = self.make_controller()
-        controller._placement_metadata = MagicMock(return_value={"test": "metadata"})
-        controller._optional_draft_placement_metadata = MagicMock(return_value=None)
+        target_spec = RuntimeRoleSpec(num_logical_experts=4, num_redundant_experts=2, num_layers=1)
+        controller._target_runtime_spec = MagicMock(return_value=target_spec)  # type: ignore[method-assign]
+        controller._optional_draft_runtime_spec = MagicMock(return_value=None)  # type: ignore[method-assign]
         model_states = {"target": object()}
-        controller._placement_model_states = MagicMock(return_value=model_states)
+        controller._placement_model_states = MagicMock(return_value=model_states)  # type: ignore[method-assign]
         group = object()
         stream = object()
-        placement = SimpleNamespace(digest=lambda: "test-digest", physical_to_logical=((0, 1),))
+        snapshot = SimpleNamespace(
+            digest=lambda: "test-digest",
+            target=SimpleNamespace(num_layers=1),
+            draft=None,
+        )
         with (
             patch.object(module, "get_ep_group", return_value=SimpleNamespace(cpu_group=group)),
             patch.object(module, "collective_call", side_effect=lambda fn, *_: fn()),
-            patch.object(module, "read_placement_collectively", return_value=placement) as read,
+            patch.object(module, "read_placement_collectively", return_value=snapshot) as read,
             patch.object(module, "install_placement") as install,
             patch.object(module.torch.accelerator, "current_stream", return_value=stream),
         ):
             controller.maybe_start_async_loop(True)
         read.assert_called_once_with(
             "deployment.json",
-            {"test": "metadata"},
+            target_spec,
             group,
-            draft_metadata=None,
+            draft_spec=None,
         )
         install.assert_called_once_with(
             controller.state,
-            placement,
+            snapshot,
             group,
             stream,
             model_states=model_states,
@@ -96,33 +109,29 @@ class TestStaticController(unittest.TestCase):
 
     def test_static_initialization_passes_draft_model_state(self):
         controller = self.make_controller()
-        controller._placement_metadata = MagicMock(return_value={"target": "metadata"})
-        controller._optional_draft_placement_metadata = MagicMock(return_value={"draft": "metadata"})
+        target_spec = RuntimeRoleSpec(num_logical_experts=4, num_redundant_experts=2, num_layers=1)
+        draft_spec = RuntimeRoleSpec(num_logical_experts=2, num_redundant_experts=0, num_layers=1)
+        controller._target_runtime_spec = MagicMock(return_value=target_spec)  # type: ignore[method-assign]
+        controller._optional_draft_runtime_spec = MagicMock(return_value=draft_spec)  # type: ignore[method-assign]
         model_states = {"target": object(), "draft": object()}
-        controller._placement_model_states = MagicMock(return_value=model_states)
+        controller._placement_model_states = MagicMock(return_value=model_states)  # type: ignore[method-assign]
         group = object()
         stream = object()
-        draft = SimpleNamespace(physical_to_logical=((0, 1),))
-        placement = SimpleNamespace(
+        snapshot = SimpleNamespace(
             digest=lambda: "multi-digest",
-            physical_to_logical=((0, 1, 2, 3, 0, 1),),
-            draft=draft,
+            target=SimpleNamespace(num_layers=1),
+            draft=SimpleNamespace(num_layers=1),
         )
         with (
             patch.object(module, "get_ep_group", return_value=SimpleNamespace(cpu_group=group)),
             patch.object(module, "collective_call", side_effect=lambda fn, *_: fn()),
-            patch.object(module, "read_placement_collectively", return_value=placement),
+            patch.object(module, "read_placement_collectively", return_value=snapshot) as read,
             patch.object(module, "install_placement") as install,
             patch.object(module.torch.accelerator, "current_stream", return_value=stream),
         ):
             controller.maybe_start_async_loop(True)
-        install.assert_called_once_with(
-            controller.state,
-            placement,
-            group,
-            stream,
-            model_states=model_states,
-        )
+        read.assert_called_once_with("deployment.json", target_spec, group, draft_spec=draft_spec)
+        install.assert_called_once_with(controller.state, snapshot, group, stream, model_states=model_states)
 
     def test_dummy_loading_does_not_install_or_start_worker(self):
         controller = self.make_controller()
@@ -131,3 +140,40 @@ class TestStaticController(unittest.TestCase):
             controller.maybe_start_async_loop(False)
         install.assert_not_called()
         controller.state.start_async_loop.assert_not_called()
+
+    def test_static_pp_slicing_and_phase_filtered_observation(self):
+        controller = self.make_controller(log_balancedness=True)
+        controller.load_collection_phase = "decode"
+        controller.set_batch_phase(batch_has_prefill=True)
+        controller.prepare_forward(object(), 4)
+        controller.step()
+        controller.state.update_static_observation_schedule.assert_not_called()
+        controller.state.step_static_observability.assert_not_called()
+
+        ep_group, pp_group, stream = object(), object(), object()
+        snapshot = SimpleNamespace(
+            digest=lambda: "pp-digest",
+            target=SimpleNamespace(num_layers=2),
+            draft=SimpleNamespace(num_layers=1),
+        )
+        stage_roles = {"target": object(), "draft": object()}
+        controller._stage_placement_model_states = MagicMock(return_value={"target": "t", "draft": "d"})  # type: ignore[method-assign]
+        with (
+            patch.object(module, "_get_pp_topology", return_value=(1, 2, pp_group)),
+            patch.object(module, "get_ep_group", return_value=SimpleNamespace(cpu_group=ep_group)),
+            patch.object(module, "read_pp_placement_collectively", return_value=(snapshot, stage_roles)) as read_pp,
+            patch.object(module, "install_placement") as install,
+            patch.object(module.torch.accelerator, "current_stream", return_value=stream),
+        ):
+            controller.maybe_start_async_loop(True)
+            read_pp.return_value = (snapshot, {})
+            controller.maybe_start_async_loop(False)
+        self.assertEqual(read_pp.call_count, 2)
+        install.assert_called_once_with(
+            controller.state,
+            snapshot,
+            ep_group,
+            stream,
+            model_states={"target": "t", "draft": "d"},
+            role_placements=stage_roles,
+        )
