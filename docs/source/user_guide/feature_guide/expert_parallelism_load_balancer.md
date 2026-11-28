@@ -53,6 +53,38 @@ metadata, not weights, and its name gains a `.<kv_role>.dp<rank>` suffix
 (`deployment.standalone.dp0.json` without PD disaggregation). All ranks must be
 given the same path.
 
+### Static Deployment Import
+
+`eplb_config.mode=static` installs a pre-generated deployment document once,
+before memory profiling and graph capture, and then keeps the fixed
+expert-replica routing without runtime load collection, placement planning, or
+weight migration. `--enable-eplb` is still required because it controls the
+router and the expert allocation.
+
+```bash
+vllm serve Qwen/Qwen3-30B-A3B \
+  --tensor-parallel-size 8 \
+  --enable-expert-parallel \
+  --enable-eplb \
+  --eplb-config '{"num_redundant_experts":16}' \
+  --additional-config '{"eplb_config":{"mode":"static","expert_placement_path":"/data/eplb/deployment.json"}}'
+```
+
+Constraints:
+
+- The deployment document is an input. This change implements the consumer
+  side; the file must be produced by a compatible external calibration tool;
+  this change only consumes it.
+- `pipeline_parallel_size` must be `1`, `load_collection_phase` must stay
+  `all`, and `expert_placement_path` is required.
+- The document metadata must match the model, revision, architecture,
+  quantization, dtype, EP/TP/DP/PP sizes, expert counts, and layer order.
+- EP rank 0 reads the file; the document is broadcast to every rank and every
+  rank validates it against its own runtime metadata before weight movement.
+- A registered MoE draft that enables EPLB is installed from the same document.
+- `eplb_config.log_balancedness=true` enables a rank-local load sample. It is
+  for observation only and never triggers rearrangement.
+
 ### Verifying the Feature
 
 ```bash
@@ -83,6 +115,8 @@ all require `--enable-eplb`:
 | `export_after_rearranges` | unset | Export once after this many completed rearrangements; requires `expert_placement_path`. |
 | `load_collection_phase` | `all` | `all`, `prefill` or `decode`; STAIR only. |
 | `stair_config` | - | Advanced STAIR knobs, defaults fit most workloads. |
+| `mode` | `dynamic` | `dynamic` or `static`. `static` installs `expert_placement_path` once at startup. |
+| `expert_placement_path` | - | Static input document; with `export_after_rearranges`, the dynamic export target. |
 
 Unknown fields are warned about and ignored.
 

@@ -36,6 +36,8 @@ def make_metadata():
     }
 
 
+from vllm_ascend.distributed.eplb.placement import plan_placement_sources
+
 class TestPlacement(unittest.TestCase):
     def setUp(self):
         self.placement = EplbPlacement(make_metadata(), ((0, 1, 2, 0, 1, 3),), {"workload": "unit-test"})
@@ -190,3 +192,18 @@ class TestPlacement(unittest.TestCase):
             path.write_text("{", encoding="utf-8")
             with self.assertRaises(json.JSONDecodeError):
                 load_placement(path)
+
+    def test_source_plan_handles_local_swaps_and_replication(self):
+        old = (0, 1, 2, 3, 0, 1)
+        target = (1, 0, 3, 2, 0, 1)
+        ranks, slots = plan_placement_sources(old, target, 2)
+        self.assertEqual((ranks[0][0], slots[0][0]), (0, 1))
+        self.assertEqual((ranks[0][1], slots[0][1]), (0, 0))
+        self.assertEqual((ranks[0][2], slots[0][2]), (1, 0))
+        for rank in range(2):
+            for slot in range(3):
+                self.assertEqual(old[ranks[rank][slot] * 3 + slots[rank][slot]], target[rank * 3 + slot])
+
+    def test_source_plan_rejects_missing_sources(self):
+        with self.assertRaisesRegex(ValueError, "No source"):
+            plan_placement_sources((0, 1), (0, 2), 2)

@@ -1083,6 +1083,16 @@ class TestAscendConfig(TestBase):
         self.assertIsNot(first_ascend_config, second_ascend_config)
         self.assertTrue(second_ascend_config.ascend_compilation_config.enable_npugraph_ex)
 
+    def test_eplb_static_configuration(self):
+        self.assertEqual(EplbConfig().mode, "dynamic")
+        self.assertEqual(EplbConfig(mode="static", expert_placement_path="deployment.json").mode, "static")
+        with self.assertRaisesRegex(ValueError, "requires mode='static'"):
+            EplbConfig(expert_placement_path="deployment.json")
+        for kwargs in ({"mode": "static"}, {"mode": "auto"}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                EplbConfig(**kwargs)
+
+
 
 class TestShortRequestFirstConfig(TestBase):
     def test_default_is_disabled(self):

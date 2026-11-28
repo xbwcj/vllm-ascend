@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
 # Deployment knobs that only make sense with --enable-eplb.
-DEPLOYMENT_EPLB_FIELDS = frozenset({"expert_placement_path", "export_after_rearranges"})
+DEPLOYMENT_EPLB_FIELDS = frozenset({"mode", "expert_placement_path", "export_after_rearranges"})
 _EPLB_CONFIG_FIELDS = frozenset(EplbConfig.__dataclass_fields__)
 _STAIR_CONFIG_FIELDS = frozenset(StairConfig.__dataclass_fields__)
 _KV_ROLE_TO_PLACEMENT_SCOPE = {"kv_producer": "prefill", "kv_consumer": "decode", "kv_both": "mixed"}
@@ -59,12 +59,27 @@ def validate_eplb_config(vllm_config: VllmConfig) -> None:
     if not isinstance(eplb_config, dict):
         raise TypeError("additional_config.eplb_config must be a dictionary.")
 
+    mode = eplb_config.get("mode", "dynamic")
+    if mode not in ("dynamic", "static"):
+        raise ValueError("EPLB mode must be 'dynamic' or 'static'")
     expert_placement_path = eplb_config.get("expert_placement_path")
     export_after_rearranges = eplb_config.get("export_after_rearranges")
-    if export_after_rearranges is not None and expert_placement_path is None:
-        raise ValueError("eplb_config.export_after_rearranges requires eplb_config.expert_placement_path")
-    if expert_placement_path is not None and export_after_rearranges is None:
-        raise ValueError("eplb_config.expert_placement_path requires eplb_config.export_after_rearranges")
+    if mode == "static":
+        if not vllm_config.parallel_config.enable_eplb:
+            raise ValueError("Static EPLB requires --enable-eplb")
+        if not expert_placement_path:
+            raise ValueError("Static EPLB requires eplb_config.expert_placement_path")
+        if export_after_rearranges is not None:
+            raise ValueError("Static EPLB does not export; export_after_rearranges requires mode='dynamic'")
+        if vllm_config.parallel_config.pipeline_parallel_size != 1:
+            raise ValueError("Static EPLB currently requires PP=1")
+        if eplb_config.get("load_collection_phase", "all") != "all":
+            raise ValueError("Static EPLB does not collect load; load_collection_phase must be 'all'")
+    else:
+        if export_after_rearranges is not None and expert_placement_path is None:
+            raise ValueError("eplb_config.export_after_rearranges requires eplb_config.expert_placement_path")
+        if expert_placement_path is not None and export_after_rearranges is None:
+            raise ValueError("eplb_config.expert_placement_path requires mode='static' or export_after_rearranges")
 
     unsupported_eplb_fields = sorted(set(eplb_config) - _EPLB_CONFIG_FIELDS)
     stair_config = eplb_config.get("stair_config")
@@ -112,4 +127,6 @@ def validate_eplb_config(vllm_config: VllmConfig) -> None:
         if vllm_config.parallel_config.enable_elastic_ep:
             raise ValueError("Async EPLB is not supported with elastic EP on Ascend.")
     elif DEPLOYMENT_EPLB_FIELDS & eplb_config.keys():
-        raise ValueError("additional_config.eplb_config expert_placement_path and export fields require --enable-eplb.")
+        raise ValueError(
+            "additional_config.eplb_config mode, expert_placement_path and export fields require --enable-eplb."
+        )

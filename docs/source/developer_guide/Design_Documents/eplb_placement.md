@@ -1,4 +1,4 @@
-# EPLB Deployment Export
+# EPLB Deployment Export, Import and Static Initialization
 
 Ascend EPLB can export the deployment its dynamic mode has installed, so the
 calibration result can be inspected, diffed, or shipped to another
@@ -81,7 +81,58 @@ Export guarantees an installed, consistent deployment. It does not guarantee
 that calibration has converged or that a rearrangement changed any experts.
 Use representative traffic and inspect dynamic-cycle/performance evidence.
 
+## Import transaction
+
+`mode=static` keeps `--enable-eplb` enabled because it controls the router and
+expert allocation. The controller installs the document instead of starting
+the dynamic EPLB worker. Installation happens before memory profiling and
+graph capture:
+
+1. Load the checkpoint in the existing initial physical layout and expose the
+   quantization method's actual compute-weight views.
+2. Read the document on EP rank 0, broadcast it to every rank, and validate it
+   against each rank's runtime metadata before backend registration or
+   movement.
+3. Snapshot and verify the old layout, then build an exact source coordinate
+   for each target slot. Prefer unchanged slots, then rank-local copies.
+4. Initialize the existing HIXL session if needed, without a background thread.
+5. Stage one changed layer into the existing expert buffer through
+   `stage_explicit_layer_transfer`.
+6. Synchronize and reach an EP CPU barrier before overwriting live sources.
+7. Install buffered weights using upstream `move_from_buffer`, rebuild and
+   copy the logical maps/replica counts, and refresh routing in place.
+8. Synchronize before reusing buffers for the next layer, then close temporary
+   HIXL registrations after the complete deployment is installed.
+
+This sequence also supports within-rank swaps: both old sources are staged
+before either live destination is overwritten. Directly calling
+`update_mapping` or `from_mapping` cannot replace these weight transfers.
+
+Quantization metadata moves with the exact weight views already supplied by
+the quantization method. No controller-side weight-layout knowledge is added.
+Initialization retains upstream compatibility load/workspace buffers in this
+version; static mode is a runtime-overhead reduction, not a claim of minimum
+memory consumption.
+
+## Static serving
+
+During serving:
+
+- controller `prepare_forward` and `step` return without dynamic work;
+- state `step`, profile rearrangement and async startup are guarded;
+- ordinary forwards keep each layer's `load_recording_enabled=False`, omitting
+  both token recording and AllGather eligibility/counting from graph capture;
+  a scheduled observation forward enables one sampled recording step and then
+  disables it again;
+- logical-to-physical mapping remains active.
+
+`eplb_config.log_balancedness=true` opts into a rank-local load sample so that
+data-parallel prefill engines do not enter a device collective from the hot
+path. It never triggers planning or migration.
+
 ## Initial support boundary
+
+Static import requires PP=1, `--enable-eplb`, and `load_collection_phase=all`. The same document is broadcast to every rank and validated locally before any weight movement.
 
 Export requires PP=1. One registered target MoE model is required. EP/TP/DP
 sizes, model identity, revision, structure, quantization, dtype, expert counts

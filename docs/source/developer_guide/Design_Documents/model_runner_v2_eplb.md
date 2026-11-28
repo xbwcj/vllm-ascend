@@ -14,7 +14,7 @@ user-visible configuration and the supported feature matrix, see the
 [EPLB user guide](../../user_guide/feature_guide/expert_parallelism_load_balancer.md).
 
 For committed deployment export, see
-[EPLB Deployment Export](eplb_placement.md).
+[EPLB Deployment Export, Import and Static Initialization](eplb_placement.md).
 
 ## Mental model
 

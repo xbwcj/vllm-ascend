@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM Ascend project
 
-"""Portable committed EPLB deployments; deliberately independent of torch/NPU.
+"""Portable EPLB deployment documents; deliberately independent of torch/NPU.
 
 Slot ``rank * slots_per_rank + local_slot`` stores the logical expert given
 by ``physical_to_logical[layer][slot]``. Derived routing tables are not saved.
@@ -18,8 +18,7 @@ from pathlib import Path
 from typing import Any
 
 PLACEMENT_SCHEMA_VERSION = 3
-# Version 2 files (target-only, no draft entry) are still read; new files are
-# always written with PLACEMENT_SCHEMA_VERSION.
+# Version 2 files (target-only, no draft entry) are still readable.
 READABLE_SCHEMA_VERSIONS = frozenset({2, PLACEMENT_SCHEMA_VERSION})
 _PLACEMENT_SCOPES = frozenset({"prefill", "decode", "mixed"})
 _METADATA_FIELDS = frozenset(
@@ -258,3 +257,31 @@ def build_placement_metadata(
     }
     validate_metadata(metadata)
     return metadata
+
+
+def plan_placement_sources(
+    old: tuple[int, ...],
+    new: tuple[int, ...],
+    ep_size: int,
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Choose one exact old source, preferring unchanged and rank-local slots."""
+    if not old or len(old) != len(new) or ep_size < 1 or len(old) % ep_size:
+        raise ValueError("EPLB source planning requires equally sized dense EP placements")
+    slots = len(old) // ep_size
+    owners: dict[int, list[int]] = {}
+    for physical, expert in enumerate(old):
+        owners.setdefault(expert, []).append(physical)
+    source_ranks, source_slots = [], []
+    for rank in range(ep_size):
+        ranks, offsets = [], []
+        for slot in range(slots):
+            physical = rank * slots + slot
+            candidates = owners.get(new[physical], [])
+            if not candidates:
+                raise ValueError(f"No source owns logical expert {new[physical]}")
+            source = min(candidates, key=lambda index: (index != physical, index // slots != rank, index))
+            ranks.append(source // slots)
+            offsets.append(source % slots)
+        source_ranks.append(ranks)
+        source_slots.append(offsets)
+    return source_ranks, source_slots

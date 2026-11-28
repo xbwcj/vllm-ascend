@@ -308,6 +308,39 @@ class TestAscendEPLBController(unittest.TestCase):
         from_mapping.assert_not_called()
         self.assertIs(controller.state, state)
 
+    def test_dynamic_mtp_draft_is_not_pinned_to_a_static_placement(self):
+        controller = self._make_controller()
+        controller.mode = "dynamic"
+        controller._kv_role = None
+        controller.parallel_config.enable_elastic_ep = False
+        controller._has_registered_models = False
+        controller.state = MagicMock()
+        speculator = SimpleNamespace(
+            vllm_config=SimpleNamespace(parallel_config=SimpleNamespace(enable_eplb=True)),
+            model=nn.Linear(2, 2),
+            set_eplb_state=MagicMock(),
+        )
+        draft_config = SimpleNamespace(model="draft", compute_hash=lambda: "draft")
+
+        with patch(
+            "vllm.v1.worker.gpu.eplb_utils.get_mixture_of_experts_model",
+            return_value=speculator.model,
+        ):
+            added = controller.maybe_register_speculator(
+                speculator,
+                SimpleNamespace(draft_model_config=draft_config, method="mtp"),
+                False,
+            )
+
+        self.assertTrue(added)
+        # A dynamic deployment leaves the draft on the async worker: nothing
+        # switches static recording on and nothing pins the draft state.
+        self.assertIs(controller._draft_placement_model_config, draft_config)
+        controller.state.disable_static_recording.assert_not_called()
+        # Nothing looks the draft state up to pin it to a static placement.
+        controller.state.model_states.get.assert_not_called()
+
+
 
 class TestUnwrapMoe(unittest.TestCase):
     def test_unwraps_multimodal_non_moe_model(self):
