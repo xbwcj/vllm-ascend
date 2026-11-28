@@ -284,8 +284,7 @@ class TestAscendEPLBController(unittest.TestCase):
             )
 
         self.assertTrue(added)
-        self.assertIs(controller._draft_placement_model_config, draft_config)
-        controller.state.disable_static_recording.assert_not_called()
+        self.assertTrue(controller._draft_registered)
         controller.state.model_states.get.assert_not_called()
 
 

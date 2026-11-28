@@ -133,11 +133,11 @@ omit it or set it to `stair` to run STAIR.
 
 ### Static Deployment Import
 
-`eplb_config.mode="static"` installs a `version: 1` placement snapshot JSON
-once, before memory profiling and graph capture, and then keeps the fixed
-expert-replica routing without runtime load collection, placement planning, or
-weight migration. `--enable-eplb` is still required because it controls the
-router and the expert allocation.
+`eplb_config.mode="static"` loads expert weights directly into the physical
+slots specified by a `version: 1` placement snapshot JSON during checkpoint
+loading, then keeps fixed expert-replica routing without EPLB communicators,
+staging buffers, runtime load collection, or weight migration. `--enable-eplb`
+is still required because it controls the router and expert slot allocation.
 
 ```bash
 vllm serve Qwen/Qwen3-30B-A3B \
@@ -156,12 +156,10 @@ Constraints:
 - Global rank 0 reads the file, broadcasts it across PP and EP groups, and
   every rank validates `ep_size`, logical/redundant expert counts, and whole-model
   MoE layer counts (slicing layers per PP stage when `pipeline_parallel_size > 1`)
-  before any weight movement.
-- A registered MoE draft that enables EPLB is installed from the `draft` entry
-  of the same snapshot.
-- `load_collection_phase` may remain set (ignored during ordinary static
-  forwards, and applied when `eplb_config.log_balancedness=true` samples
-  rank-local load).
+  before loading checkpoint weights.
+- A registered MoE draft that enables EPLB is loaded from the `draft` entry of
+  the same snapshot.
+- `load_collection_phase` may remain set and is ignored in `static` mode.
 
 #### MRv2 Communicator Selection
 
