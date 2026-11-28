@@ -279,18 +279,29 @@ class AscendWarmupConfig:
 
 @config
 class EplbConfig:
-    """Ascend extensions to the upstream Model Runner V2 EPLB configuration."""
+    """Ascend extensions to the upstream EPLB configuration."""
 
-    # Model Runner V2 only. Restricts which batch phase contributes to the
-    # upstream EPLB expert-load window; any prefill request marks the batch
-    # as prefill.
+    # Restricts which batch phase contributes to the upstream EPLB
+    # expert-load window; any prefill request marks the batch as prefill.
     load_collection_phase: str = "all"
     stair_config: StairConfig = dataclasses.field(default_factory=StairConfig)
+    # Static retains EPLB routing but installs a deployment once,
+    # before profiling/capture, without runtime collection or rearrangement.
+    mode: Literal["dynamic", "static"] = "dynamic"
+    # Input deployment document for static mode. Dynamic mode neither reads
+    # nor writes this path.
+    expert_placement_path: str | None = None
 
     @model_validator(mode="after")
     def _validate_config(self):
         if self.load_collection_phase not in ["all", "prefill", "decode"]:
             raise ValueError('load_collection_phase must be one of ["all", "prefill", "decode"]')
+        if self.expert_placement_path is not None and not self.expert_placement_path:
+            raise ValueError("eplb_config.expert_placement_path must be a non-empty path")
+        if self.mode == "static" and not self.expert_placement_path:
+            raise ValueError("Static EPLB requires eplb_config.expert_placement_path")
+        if self.mode == "dynamic" and self.expert_placement_path is not None:
+            raise ValueError("eplb_config.expert_placement_path requires mode='static'")
 
         return self
 
