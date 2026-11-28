@@ -148,8 +148,8 @@ Both warmups run on a background thread during weight loading. The worker waits 
 
 **eplb_config**
 
-Accepts `load_collection_phase`, `stair_config`, and the deployment export
-fields `expert_placement_path` and `export_after_rearranges`. Configure upstream EPLB
+Accepts `load_collection_phase`, `stair_config`, and the deployment fields
+`mode`, `expert_placement_path`, and `export_after_rearranges`. Configure upstream EPLB
 through `--enable-eplb` and `--eplb-config`. Ascend uses the STAIR policy by
 default and moves expert weights asynchronously over HIXL when it is available
 on every EPLB rank, falling back to Gloo CPU staging otherwise. Select
@@ -162,8 +162,9 @@ for the advanced STAIR fields and their defaults.
 | ---- | ---- | ------- | ----------- |
 | `load_collection_phase` | str | `"all"` | Select `"all"`, `"prefill"`, or `"decode"` load submission. Only effective with the STAIR policy; a value other than `"all"` requires `--enable-eplb`. Any batch containing a prefill request is classified entirely as prefill. |
 | `stair_config` | dict | `{}` | Advanced STAIR policy tuning. See the [EPLB tuning suggestions table](../feature_guide/expert_parallelism_load_balancer.md#tuning-suggestions) for all fields, defaults, and ranges. |
-| `expert_placement_path` | str | unset | Export target for the calibrated deployment. All ranks must be given the same path. |
-| `export_after_rearranges` | int | unset | Export the committed deployment once, in the first forward gap after this many completed rearrangements. Requires `expert_placement_path`; the file name gains a `.<kv_role>.dp<rank>` suffix so PD roles and DP ranks do not overwrite each other. |
+| `mode` | str | `"dynamic"` | `dynamic` runs runtime collection and rearrangement; `static` installs a saved deployment once, before profiling, and then keeps routing without runtime rearrangement. Requires `expert_placement_path`. |
+| `expert_placement_path` | str | unset | Shared path for both directions: a `static` engine reads the deployment from it, a `dynamic` engine writes the calibrated deployment to it. Required for `static`; see `export_after_rearranges` for the dynamic direction. |
+| `export_after_rearranges` | int | unset | `dynamic` mode only. Export the committed deployment once, in the first forward gap after this many completed rearrangements. Requires `expert_placement_path`; the file name gains a `.<kv_role>.dp<rank>` suffix so PD roles and DP ranks do not overwrite each other. |
 
 **scheduler_config**
 

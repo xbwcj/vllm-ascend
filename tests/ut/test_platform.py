@@ -634,6 +634,48 @@ class TestNPUPlatform(TestBase):
             mock_warning.call_args.args[0],
         )
 
+    def test_validate_eplb_static_config(self):
+        config = self.mock_vllm_config()
+        config.parallel_config.enable_eplb = True
+        config.parallel_config.pipeline_parallel_size = 1
+        config.additional_config = {"eplb_config": {"mode": "static", "expert_placement_path": "deployment.json"}}
+        validate_eplb_config(config)
+        self.assertEqual(config.additional_config["eplb_config"]["expert_placement_path"], "deployment.json")
+
+    def test_validate_eplb_static_rejects_incomplete_or_unsupported_config(self):
+        for failure in ("disabled", "missing_path", "pp", "phase", "dynamic_path"):
+            with self.subTest(failure=failure):
+                config = self.mock_vllm_config()
+                config.parallel_config.enable_eplb = True
+                config.parallel_config.pipeline_parallel_size = 1
+                fields = {"mode": "static", "expert_placement_path": "deployment.json"}
+                config.additional_config = {"eplb_config": fields}
+                if failure == "disabled":
+                    config.parallel_config.enable_eplb = False
+                elif failure == "missing_path":
+                    fields.pop("expert_placement_path")
+                elif failure == "pp":
+                    config.parallel_config.pipeline_parallel_size = 2
+                elif failure == "phase":
+                    fields["load_collection_phase"] = "decode"
+                elif failure == "dynamic_path":
+                    fields["mode"] = "dynamic"
+                with self.assertRaises(ValueError):
+                    validate_eplb_config(config)
+
+    def test_validate_eplb_static_accepts_speculative_config(self):
+        config = self.mock_vllm_config()
+        config.parallel_config.enable_eplb = True
+        config.parallel_config.pipeline_parallel_size = 1
+        config.speculative_config = SimpleNamespace()
+        config.additional_config = {
+            "eplb_config": {
+                "mode": "static",
+                "expert_placement_path": "deployment.json",
+            }
+        }
+        validate_eplb_config(config)
+
     def test_validate_eplb_config_rejects_weight_offload(self):
         for cpu_gb, group_size in ((1, 0), (0, 2)):
             with self.subTest(cpu_gb=cpu_gb, group_size=group_size):
@@ -692,6 +734,21 @@ class TestNPUPlatform(TestBase):
         vllm_config.additional_config = {"eplb_config": {"expert_placement_path": "deployment.json"}}
 
         with self.assertRaisesRegex(ValueError, "requires eplb_config.export_after_rearranges"):
+            validate_eplb_config(vllm_config)
+
+    def test_validate_eplb_static_rejects_export_after_rearranges(self):
+        vllm_config = self.mock_vllm_config()
+        vllm_config.parallel_config.enable_eplb = True
+        vllm_config.parallel_config.pipeline_parallel_size = 1
+        vllm_config.additional_config = {
+            "eplb_config": {
+                "mode": "static",
+                "expert_placement_path": "deployment.json",
+                "export_after_rearranges": 2,
+            }
+        }
+
+        with self.assertRaisesRegex(ValueError, "requires mode='dynamic'"):
             validate_eplb_config(vllm_config)
 
     def test_validate_eplb_config_warns_and_forces_async_mode(self):

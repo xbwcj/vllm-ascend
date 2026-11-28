@@ -258,3 +258,31 @@ def build_placement_metadata(
     }
     validate_metadata(metadata)
     return metadata
+
+
+def plan_placement_sources(
+    old: tuple[int, ...],
+    new: tuple[int, ...],
+    ep_size: int,
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Choose one exact old source, preferring unchanged and rank-local slots."""
+    if not old or len(old) != len(new) or ep_size < 1 or len(old) % ep_size:
+        raise ValueError("EPLB source planning requires equally sized dense EP placements")
+    slots = len(old) // ep_size
+    owners: dict[int, list[int]] = {}
+    for physical, expert in enumerate(old):
+        owners.setdefault(expert, []).append(physical)
+    source_ranks, source_slots = [], []
+    for rank in range(ep_size):
+        ranks, offsets = [], []
+        for slot in range(slots):
+            physical = rank * slots + slot
+            candidates = owners.get(new[physical], [])
+            if not candidates:
+                raise ValueError(f"No source owns logical expert {new[physical]}")
+            source = min(candidates, key=lambda index: (index != physical, index // slots != rank, index))
+            ranks.append(source // slots)
+            offsets.append(source % slots)
+        source_ranks.append(ranks)
+        source_slots.append(offsets)
+    return source_ranks, source_slots

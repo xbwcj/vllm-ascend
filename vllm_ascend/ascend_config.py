@@ -285,8 +285,11 @@ class EplbConfig:
     # expert-load window; any prefill request marks the batch as prefill.
     load_collection_phase: str = "all"
     stair_config: StairConfig = dataclasses.field(default_factory=StairConfig)
-    # Committed-deployment export target: a calibrated placement is written
-    # here once the configured number of rearrange cycles has completed.
+    # Static retains EPLB routing but installs a deployment once,
+    # before profiling/capture, without runtime collection or rearrangement.
+    mode: Literal["dynamic", "static"] = "dynamic"
+    # One path for both directions: a static deployment is read from it before
+    # profiling, and a dynamic deployment is written to it after calibration.
     expert_placement_path: str | None = None
     # One-shot committed-deployment export: dump the placement after this many
     # completed rearrange cycles instead of waiting for an external RPC.
@@ -298,13 +301,19 @@ class EplbConfig:
             raise ValueError('load_collection_phase must be one of ["all", "prefill", "decode"]')
         if self.expert_placement_path is not None and not self.expert_placement_path:
             raise ValueError("eplb_config.expert_placement_path must be a non-empty path")
+        if self.mode == "static" and not self.expert_placement_path:
+            raise ValueError("Static EPLB requires eplb_config.expert_placement_path")
         if self.export_after_rearranges is not None:
+            if self.mode != "dynamic":
+                raise ValueError("eplb_config.export_after_rearranges requires mode='dynamic'")
             if self.expert_placement_path is None:
                 raise ValueError("eplb_config.export_after_rearranges requires eplb_config.expert_placement_path")
             if self.export_after_rearranges < 1:
                 raise ValueError("eplb_config.export_after_rearranges must be >= 1")
-        if self.expert_placement_path is not None and self.export_after_rearranges is None:
-            raise ValueError("eplb_config.expert_placement_path requires eplb_config.export_after_rearranges")
+        if self.mode == "dynamic" and self.expert_placement_path is not None and self.export_after_rearranges is None:
+            raise ValueError(
+                "eplb_config.expert_placement_path requires eplb_config.export_after_rearranges in dynamic mode"
+            )
 
         return self
 

@@ -1,13 +1,15 @@
-# EPLB Deployment Export
+# EPLB Deployment Export and Static Initialization
 
-Ascend EPLB can export the deployment its dynamic mode has installed, so the
-calibration result can be inspected, diffed, or shipped to another
-deployment. The deployment file contains installed physical-to-logical
-expert mappings, not a planner's uncommitted target and not expert weights.
+Ascend EPLB can reuse a deployment learned by dynamic EPLB. The deployment
+file contains installed physical-to-logical expert mappings, not a planner's
+uncommitted target and not expert weights.
 
-The implementation is one part: versioned deployment files and a
-collective, between-forwards export operation that one configuration knob
-triggers.
+The implementation has two reviewable parts:
+
+1. Versioned deployment files and a collective, between-forwards export
+   operation that one configuration knob triggers.
+2. One-time installation during model initialization, followed by fixed
+   routing without runtime collection, planning, or migration.
 
 ## Deployment representation
 
@@ -81,24 +83,91 @@ Export guarantees an installed, consistent deployment. It does not guarantee
 that calibration has converged or that a rearrangement changed any experts.
 Use representative traffic and inspect dynamic-cycle/performance evidence.
 
+## Static initialization
+
+Keep `--enable-eplb` enabled: it controls the router and expert allocation,
+which static execution still needs. The Ascend `mode` separately controls
+the lifetime of dynamic activity.
+
+The controller reuses the upstream model-registration and load hooks. In its
+static `maybe_start_async_loop` branch it installs the file instead of
+starting a worker. This happens before memory profiling and graph capture.
+
+The first implementation intentionally uses existing checkpoint loading and
+then performs one exact initialization-time deployment:
+
+1. Load the checkpoint in the existing initial physical layout and expose the
+   quantization method's actual compute-weight views.
+2. Read the deployment on EP rank 0, broadcast it to every rank, and
+   validate the shared document against each rank's runtime metadata before
+   backend registration or movement.
+3. Snapshot and verify the old layout, then build an exact source coordinate
+   for each target slot. Prefer unchanged slots, then rank-local copies.
+4. Initialize the existing HIXL session if needed, without a background thread.
+5. Stage one changed layer into the existing expert buffer through
+   `stage_explicit_layer_transfer`.
+6. Synchronize and reach an EP CPU barrier before overwriting live sources.
+7. Install buffered weights using upstream `move_from_buffer`, rebuild and
+   copy the logical maps/replica counts, and refresh routing in place.
+8. Synchronize before reusing buffers for the next layer, then close temporary
+   HIXL registrations after the complete deployment is installed.
+
+This sequence also supports within-rank swaps: both old sources are staged
+before either live destination is overwritten. Directly calling
+`update_mapping` or `from_mapping` cannot replace these weight transfers.
+
+Quantization metadata moves with the exact weight views already supplied by
+the quantization method. No controller-side weight-layout knowledge is added.
+Initialization retains upstream compatibility load/workspace buffers in this
+version; static mode is a runtime-overhead reduction, not a claim of minimum
+memory consumption. Direct checkpoint-to-target loading is future work.
+
+During serving:
+
+- controller `prepare_forward` and `step` return without dynamic work;
+- state `step`, profile rearrangement and async startup are guarded;
+- ordinary forwards keep each layer's `load_recording_enabled=False`, omitting
+  both token recording and AllGather eligibility/counting from graph capture;
+  a scheduled observation forward enables one sampled recording step and then
+  disables it again;
+- logical-to-physical mapping remains active.
+
 ## Initial support boundary
 
-Export requires PP=1. One registered target MoE model is required. EP/TP/DP
-sizes, model identity, revision, structure, quantization, dtype, expert counts
-and layer order must match between the exporting engine and the file. A
-registered MoE draft that enables EPLB is exported together with the target,
-so one file describes both models.
+Both export and static consumption require PP=1. Static mode supports MTP
+when the draft configuration disables EPLB and redundant draft experts. When
+a registered MoE draft enables EPLB, the draft is rebalanced together with the
+target: a dynamic deployment rebalances both models, while static startup
+installs both the target and draft placements before graph capture.
+One registered target MoE model is required. EP/TP/DP sizes, model identity,
+revision, structure, quantization, dtype, expert counts and layer order must
+match. EP rank 0 must be able to read the file at startup; the document is
+broadcast to every rank.
 
 Existing Ascend EPLB quantization/hardware constraints, including A2 redundancy
-restrictions, still apply. Auto EPLB, elastic EP and cross-topology deployment
-conversion are outside this change.
+restrictions, still apply. Static installation uses the same communicator and
+weight movement implementation as dynamic EPLB, including its NZ/Gloo limits.
+There is no runtime fallback after a partially failed migration. Auto EPLB,
+elastic EP and cross-topology deployment conversion are outside this change.
 
 ## Validation and review split
 
-CPU tests cover the schema, mismatch rejection, atomic-file failure, collective
-errors/consensus, commit completion and the one-shot export trigger.
+CPU tests cover the schema, mismatch rejection, source planning, atomic-file
+failure, collective errors/consensus, local swaps, remote-source installation,
+Tensor List views, commit completion, routing-table identity and static guards.
 
-Before merge, run an export on real Ascend hardware for both supported
-transports and exercise a deployment with changed layers. CPU transport stubs
-do not establish HIXL/HCCL/NZ correctness. Follow the repository's
+The four-card NPU test `test_eplb_placement.py` runs dynamic calibration,
+waits for the engine to export the deployment, restarts statically, compares it and selected
+compute/scale samples, verifies answers, and checks that deployment/weights
+remain fixed with no recording or migration worker.
+
+Before merge, run it on real Ascend hardware for both supported transports,
+exercise a deployment with changed layers, and compare disabled/static/dynamic
+throughput, TTFT, TPOT, tail latency, startup time and memory. CPU transport
+stubs do not establish HIXL/HCCL/NZ correctness. Follow the repository's
 [PR testing requirements](../contribution/testing.md#pr-testing-requirements).
+
+Review schema/export/example tests first, then the
+configuration/static installation/guards/restart tests. The release notes live
+in `release_notes/fragments/22894.yaml` (deployment export) and
+`release_notes/fragments/22895.yaml` (static initialization).

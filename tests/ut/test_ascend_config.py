@@ -343,6 +343,15 @@ class TestAscendConfig(TestBase):
             EplbConfig(expert_placement_path="d.json", export_after_rearranges=0)
         with self.assertRaisesRegex(ValueError, "requires eplb_config.export_after_rearranges"):
             EplbConfig(expert_placement_path="d.json")
+        with self.assertRaisesRegex(ValueError, "requires mode='dynamic'"):
+            EplbConfig(mode="static", expert_placement_path="deployment.json", export_after_rearranges=2)
+
+    def test_eplb_static_configuration(self):
+        self.assertEqual(EplbConfig().mode, "dynamic")
+        self.assertEqual(EplbConfig(mode="static", expert_placement_path="deployment.json").mode, "static")
+        for kwargs in ({"mode": "static"}, {"mode": "auto"}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                EplbConfig(**kwargs)
 
     def test_eplb_load_collection_phase_validation(self):
         self.assertEqual(

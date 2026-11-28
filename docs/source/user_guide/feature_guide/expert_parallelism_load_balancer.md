@@ -8,21 +8,23 @@ asynchronous and does not pause in-flight requests. Ascend runs EPLB on Model
 Runner v2 with the STAIR policy by default, and keeps upstream `--eplb-config`
 fields unchanged.
 
-This page covers the Ascend deployment export: the committed placement can be
-written to a file, inspected, diffed and shipped to another deployment.
+This page covers the two Ascend extensions: exporting the committed placement to
+a file, and importing that file at startup instead of rebalancing online.
 
 | Capability | Fields under `additional_config.eplb_config` |
 | --- | --- |
-| Export the placement file | `expert_placement_path` + `export_after_rearranges` |
+| Export the placement file | `expert_placement_path` + `export_after_rearranges` (`mode` stays `dynamic`) |
+| Import the placement file | `mode` = `static` + `expert_placement_path` |
 
 ### Constraints and Limitations
 
 | Category | Description |
 | --- | --- |
 | Hardware | A2 requires `num_redundant_experts=0`; redundant experts need A3 or 950PR&950DT. |
-| Deployment | PD disaggregation and PD co-location are both supported; export requires PP=1. |
+| Deployment | PD disaggregation and PD co-location are both supported; export and import require PP=1. |
 | Model | MoE models with expert parallelism; see [Weight formats](#weight-formats). |
-| Other Limitations | `/dev/shm` must be mounted; `hixl` movement needs the CANN HIXL runtime, otherwise it falls back to Gloo. |
+| Import | Same model and revision, quantization, dtype, EP/TP/DP configuration and redundant-expert count. |
+| Other | `/dev/shm` must be mounted; `hixl` movement needs the CANN HIXL runtime, otherwise it falls back to Gloo. |
 
 ### Weight formats
 
@@ -36,7 +38,7 @@ written to a file, inspected, diffed and shipped to another deployment.
 
 ## Feature Usage
 
-### Export the placement file
+### Step 1: Export the placement file
 
 ```bash
 vllm serve Qwen/Qwen3-30B-A3B \
@@ -54,10 +56,40 @@ metadata, not weights, and its name gains a `.<kv_role>.dp<rank>` suffix
 (`deployment.standalone.dp0.json` without PD disaggregation). All ranks must be
 given the same path.
 
+### Step 2: Import the placement file
+
+```bash
+vllm serve Qwen/Qwen3-30B-A3B \
+  --tensor-parallel-size 8 \
+  --enable-expert-parallel \
+  --enable-eplb \
+  --eplb-config '{"num_redundant_experts":16}' \
+  --additional-config '{"eplb_config":{"mode":"static","expert_placement_path":"/data/eplb/deployment.standalone.dp0.json"}}'
+```
+
+The placement is installed once, before profiling and graph capture, and no
+runtime load is collected or moved.
+
+- `--enable-eplb` is still required, `load_collection_phase` must stay `all`, and
+  `export_after_rearranges` is rejected.
+- A file is only installed on the role it was calibrated for (`prefill`,
+  `decode` or `mixed`), so tune P and D nodes separately; PD co-location can
+  share one file.
+- Only EP rank 0 has to read the file; the other ranks receive it by broadcast.
+
+### MTP draft
+
+A registered MoE draft inherits `--enable-eplb` from the target: in `dynamic` mode
+it is rebalanced together with the target, in `static` mode both placements come
+from the same file.
+
 ### Verifying the Feature
 
 ```bash
+# export
 grep -E "Ascend EPLB deployment export" vllm.log
+# import
+grep "Ascend static EPLB deployment installed" vllm.log
 ```
 
 Expected:
@@ -66,6 +98,7 @@ Expected:
 Ascend EPLB deployment export armed after 5 rearrange cycles
 Ascend EPLB deployment export running in a forward gap: /data/eplb/deployment.standalone.dp0.json
 Ascend EPLB deployment exported: /data/eplb/deployment.standalone.dp0.json
+Ascend static EPLB deployment installed: scope=mixed sha256=... layers=...
 ```
 
 `grep -E "EPLB step:.*balancedness=" vllm.log` shows the load window the export
@@ -80,8 +113,9 @@ all require `--enable-eplb`:
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `expert_placement_path` | unset | Export target of the calibrated placement. |
-| `export_after_rearranges` | unset | Export once after this many completed rearrangements; requires `expert_placement_path`. |
+| `mode` | `dynamic` | `dynamic` rebalances online, `static` installs a saved placement once. |
+| `expert_placement_path` | unset | Export target in `dynamic` mode, input file in `static` mode. |
+| `export_after_rearranges` | unset | `dynamic` only, requires `expert_placement_path`. |
 | `load_collection_phase` | `all` | `all`, `prefill` or `decode`; STAIR only. |
 | `stair_config` | - | Advanced STAIR knobs, defaults fit most workloads. |
 

@@ -183,6 +183,9 @@ estimated_times:
   tests/e2e/pull_request/four_card/test_qwen3_next_w8a8.py: 360
   tests/e2e/pull_request/four_card/test_graph_mode.py: 480
   tests/e2e/pull_request/four_card/test_qwen3_mrv2_eplb.py: 300
+  # Starts the four-card model twice (dynamic export, then static restart)
+  # for both communicator variants, so budget two server startups.
+  tests/e2e/pull_request/four_card/test_eplb_placement.py: 600
   tests/e2e/pull_request/four_card/test_qwen_gdn_recoverssm.py: 300
   tests/e2e/pull_request/four_card/test_sparse_hccl_checkpoint.py: 250
   # DSA-PCP MTP pool watch: A/B legs with 32K perf prompts.
